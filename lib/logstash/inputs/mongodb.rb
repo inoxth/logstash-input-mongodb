@@ -27,7 +27,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   # Any table to exclude by name
   config :exclude_tables, :validate => :array, :default => []
 
-  config :batch_size, :avlidate => :number, :default => 30
+  config :batch_size, :validate => :number, :default => 30
 
   config :since_table, :validate => :string, :default => "logstash_since"
 
@@ -58,6 +58,8 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   config :generateId, :validate => :boolean, :default => false
 
   config :unpack_mongo_id, :validate => :boolean, :default => false
+
+  config :use_last_id_object, :validate => :boolean, :default => true
 
   # The message string to use in the event.
   config :message, :validate => :string, :default => "Default message..."
@@ -224,13 +226,18 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           last_id = @collection_data[index][:last_id]
           #@logger.debug("last_id is #{last_id}", :index => index, :collection => collection_name)
           # get batch of events starting at the last_place if it is set
-          last_id_object = BSON::ObjectId(last_id)
+          last_id_object = last_id
+          if @use_last_id_object
+            last_id_object = BSON::ObjectId(last_id)
+          end
           cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size)
           cursor.each do |doc|
-            logdate = DateTime.parse(doc['_id'].generation_time.to_s)
             event = LogStash::Event.new("host" => @host)
             decorate(event)
-            event["logdate"] = logdate.iso8601
+            if @use_last_id_object
+              logdate = DateTime.parse(doc['_id'].generation_time.to_s)
+              event["logdate"] = logdate.iso8601
+            end
             log_entry = doc.to_h.to_s
             log_entry['_id'] = log_entry['_id'].to_s
             event["log_entry"] = log_entry
@@ -264,22 +271,26 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
               flat_doc.each do |k,v|
                 # Check for an integer
                 @logger.debug("key: #{k.to_s} value: #{v.to_s}")
-                if v.is_a? Numeric
-                  event[k.to_s] = v
-                elsif v.is_a? String
-                  if v == "NaN"
-                    event[k.to_s] = Float::NAN
-                  elsif /\A[-+]?\d+[.][\d]+\z/ == v
-                    event[k.to_s] = v.to_f
-                  elsif (/\A[-+]?\d+\z/ === v) || (v.is_a? Integer)
-                    event[k.to_s] = v.to_i
-                  else
+                if (k.to_s == "_id")
+                  # do nothing
+                else 
+                  if v.is_a? Numeric
                     event[k.to_s] = v
-                  end
-                else
-                  event[k.to_s] = v.to_s unless k.to_s == "_id" || k.to_s == "tags"
-                  if (k.to_s == "tags") && (v.is_a? Array)
-                    event['tags'] = v
+                  elsif v.is_a? String
+                    if v == "NaN"
+                      event[k.to_s] = Float::NAN
+                    elsif /\A[-+]?\d+[.][\d]+\z/ == v
+                      event[k.to_s] = v.to_f
+                    elsif (/\A[-+]?\d+\z/ === v) || (v.is_a? Integer)
+                      event[k.to_s] = v.to_i
+                    else
+                      event[k.to_s] = v
+                    end
+                  else
+                    event[k.to_s] = v.to_s unless k.to_s == "_id" || k.to_s == "tags"
+                    if (k.to_s == "tags") && (v.is_a? Array)
+                      event['tags'] = v
+                    end
                   end
                 end
               end
